@@ -115,19 +115,23 @@ void ASkateboardCharacter::MoveRight(float Value)
 {
     if (Controller && Value != 0.0f)
     {
-        // Check if there is forward movement
-        float ForwardSpeed = GetVelocity().X; 
+        const FRotator Rotation = Controller->GetControlRotation();
+        const FVector Direction = FRotationMatrix(Rotation).GetUnitAxis(EAxis::Y);
+        AddMovementInput(Direction, Value);
 
-        {
-            const FRotator Rotation = Controller->GetControlRotation();
-            const FVector Direction = FRotationMatrix(Rotation).GetUnitAxis(EAxis::Y);
-            AddMovementInput(Direction, Value);
-        }
+        // Update LeanAmount based on input
+        LeanAmount = Value;
+    }
+    else
+    {
+        // Reset LeanAmount when there is no input
+        LeanAmount = 0.0f;
     }
 
     // Manage leaning
     ApplyLeaning();
 }
+
 
 
 
