@@ -1,34 +1,174 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
-
 #include "SkateboardCharacter.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "Components/InputComponent.h"
 
-// Sets default values
+// Sets default
 ASkateboardCharacter::ASkateboardCharacter()
 {
- 	// Set this character to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
-	PrimaryActorTick.bCanEverTick = true;
+    //call Tick() every frame.
+    PrimaryActorTick.bCanEverTick = true;
 
+    // Initialize speed values
+    DefaultSpeed = 600.0f;
+    MaxSpeedMultiplier = 2.0f;
+    SpeedMultiplier = 1.0f;
+
+    // Initialize lean
+    LeanAmount = 0.0f;
 }
-
-// Called when the game starts or when spawned
 void ASkateboardCharacter::BeginPlay()
 {
-	Super::BeginPlay();
-	
+    Super::BeginPlay();
+
+    // Configure properties for glide effect
+    GetCharacterMovement()->bUseSeparateBrakingFriction = true;
+    GetCharacterMovement()->BrakingFriction = 0.2f;  
+    GetCharacterMovement()->BrakingDecelerationWalking = 50.0f;  
+    GetCharacterMovement()->GroundFriction = 0.2f;  
+    GetCharacterMovement()->MaxWalkSpeed = 600.0f;  
+    GetCharacterMovement()->MaxAcceleration = 300.0f;  
 }
 
-// Called every frame
+
 void ASkateboardCharacter::Tick(float DeltaTime)
 {
-	Super::Tick(DeltaTime);
+    Super::Tick(DeltaTime);
 
+    FVector Velocity = GetVelocity();
+    FVector HorizontalVelocity = FVector(Velocity.X, Velocity.Y, 0.0f);
+
+    // Prolong the free ride
+    if (FMath::IsNearlyZero(HorizontalVelocity.Size(), 0.1f))
+    {
+        FVector Deceleration = -HorizontalVelocity.GetSafeNormal() * 5.0f * DeltaTime; 
+        GetCharacterMovement()->Velocity += Deceleration;
+    }
+
+    // Downhill acceleration 
+    if (GetCharacterMovement()->IsMovingOnGround())
+    {
+        FVector GroundNormal = GetCharacterMovement()->CurrentFloor.HitResult.Normal;
+        FVector DownhillDirection = FVector::VectorPlaneProject(FVector::DownVector, GroundNormal).GetSafeNormal();
+
+        if (DownhillDirection.Z < -0.1) // Check if on a downhill slope
+        {
+            GetCharacterMovement()->Velocity += DownhillDirection * 30.0f * DeltaTime;  // Increase downhill boost
+        }
+    }
 }
 
-// Called to bind functionality to input
+
+
+
+// Bind functionality to input
 void ASkateboardCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
-	Super::SetupPlayerInputComponent(PlayerInputComponent);
+    Super::SetupPlayerInputComponent(PlayerInputComponent);
 
+    // Bind movement inputs
+    PlayerInputComponent->BindAxis("MoveForward", this, &ASkateboardCharacter::MoveForward);
+    PlayerInputComponent->BindAxis("MoveRight", this, &ASkateboardCharacter::MoveRight);
+
+    // Bind action inputs
+    PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &ASkateboardCharacter::StartJump);
+    PlayerInputComponent->BindAction("Jump", IE_Released, this, &ASkateboardCharacter::StopJump);
+    PlayerInputComponent->BindAction("SpeedUp", IE_Pressed, this, &ASkateboardCharacter::SpeedUp);
+    PlayerInputComponent->BindAction("SlowDown", IE_Pressed, this, &ASkateboardCharacter::SlowDown);
 }
+
+void ASkateboardCharacter::MoveForward(float Value)
+{
+    if (Controller)
+    {
+        FRotator Rotation = Controller->GetControlRotation();
+        FRotator YawRotation(0, Rotation.Yaw, 0);
+        FVector Direction = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
+
+        bIsHoldingForward = (Value > 0.0f);
+
+        if (Value > 0.0f)
+        {
+            // Move forward
+            AddMovementInput(Direction, Value);
+        }
+        else if (Value < 0.0f)
+        {
+            // Slow down to stop
+            if (GetVelocity().Size() > 10.0f)
+            {
+                SpeedMultiplier = FMath::Clamp(SpeedMultiplier - 0.05f, 0.0f, MaxSpeedMultiplier);
+                GetCharacterMovement()->MaxWalkSpeed = DefaultSpeed * SpeedMultiplier;
+            }
+            else
+            {
+                // Allow backward movement after stopping
+                SpeedMultiplier = FMath::Clamp(SpeedMultiplier + 0.05f, 0.0f, MaxSpeedMultiplier);
+                GetCharacterMovement()->MaxWalkSpeed = DefaultSpeed * SpeedMultiplier;
+                AddMovementInput(-Direction, -Value);
+            }
+        }
+    }
+}
+
+
+void ASkateboardCharacter::MoveRight(float Value)
+{
+    if (Controller && Value != 0.0f)
+    {
+        // Check if there is forward movement
+        float ForwardSpeed = GetVelocity().X; 
+
+        {
+            const FRotator Rotation = Controller->GetControlRotation();
+            const FVector Direction = FRotationMatrix(Rotation).GetUnitAxis(EAxis::Y);
+            AddMovementInput(Direction, Value);
+        }
+    }
+
+    // Manage leaning
+    ApplyLeaning();
+}
+
+
+
+void ASkateboardCharacter::StartJump()
+{
+    bPressedJump = true;
+}
+
+void ASkateboardCharacter::StopJump()
+{
+    bPressedJump = false;
+}
+
+void ASkateboardCharacter::SpeedUp()
+{
+    SpeedMultiplier = FMath::Clamp(SpeedMultiplier + 0.1f, 1.0f, MaxSpeedMultiplier);
+    GetCharacterMovement()->MaxWalkSpeed = DefaultSpeed * SpeedMultiplier;
+}
+
+void ASkateboardCharacter::SlowDown()
+{
+    SpeedMultiplier = FMath::Clamp(SpeedMultiplier - 0.1f, 0.0f, MaxSpeedMultiplier);
+    GetCharacterMovement()->MaxWalkSpeed = DefaultSpeed * SpeedMultiplier;
+}
+
+void ASkateboardCharacter::ApplyLeaning()
+{
+    if (GetCapsuleComponent())
+    {
+        // LeanFactor controls the degree of tilt per unit of input
+        float LeanFactor = 10.0f;
+
+        FRotator DesiredRotation = FRotator(0.0f, 0.0f, LeanAmount * LeanFactor);
+
+        GetCapsuleComponent()->SetRelativeRotation(DesiredRotation);
+    }
+}
+
+
+
+
+
+
 
